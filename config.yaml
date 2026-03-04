@@ -1,0 +1,52 @@
+# ============================================================
+# SEC Filing Monitor — Configuration
+# ============================================================
+# Fill in your details below, then run: python sec_monitor.py
+# ============================================================
+
+# SEC EDGAR requires a User-Agent with your name and email.
+# This is mandatory — EDGAR will block requests without it.
+sec:
+  user_agent: "Liam sliamh11@gmail.com"
+  rate_limit_delay: 0.15  # seconds between requests (SEC limit: 10/sec)
+
+# ── Form 4 (Insider Trades) ─────────────────────────────────
+form4:
+  enabled: true
+  min_transaction_value: 100000  # $100K minimum
+  insider_roles:
+    - "Chief Executive Officer"
+    - "Chief Financial Officer"
+    - "CEO"
+    - "CFO"
+    - "President"
+    - "Director"
+    - "COO"
+    - "CTO"
+  # Optional: only track specific tickers (empty = track ALL)
+  watchlist: []
+  # Example: ["AAPL", "MSFT", "GOOGL", "NVDA", "TSLA"]
+  scan_limit: 100
+
+# ── 13F (Institutional Holdings) ─────────────────────────────
+thirteenf:
+  enabled: true
+  # Specific fund CIKs to track. Find at: https://www.sec.gov/cgi-bin/browse-edgar
+  track_fund_ciks: []
+  # Example (Berkshire, Bridgewater, Renaissance):
+  # track_fund_ciks: ["0001067983", "0001350694", "0001037389"]
+  new_position_min_value: 1000000  # $1M min for new position alerts
+  large_change_threshold: 0.25     # 25% position change threshold
+  scan_limit: 50
+
+# ── Email Notifications ──────────────────────────────────────
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  sender: "sliamh11@gmail.com"
+  # Gmail App Password — generate at: https://myaccount.google.com/apppasswords
+  app_password: "ptrv rqzs fnwf wxce"
+  recipient: "sliamh11@gmail.com"
+
+# ── State File ───────────────────────────────────────────────
+state_file: "state.json"
