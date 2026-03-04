@@ -11,10 +11,13 @@ fi
 
 cd "$PROJECT_DIR" || exit 1
 
-# Run monitor: stdout flows to cron's stdout (→ monitor.log), stderr captured separately
+# Run monitor: capture stderr to temp file so we can inspect it,
+# then forward it to stdout (→ monitor.log via cron redirect)
 STDERR_FILE=$(mktemp)
 "$VENV_PYTHON" "$PROJECT_DIR/sec_monitor.py" --days 1 2>"$STDERR_FILE"
 EXIT_CODE=$?
+
+cat "$STDERR_FILE"  # forward Python log output to stdout → monitor.log
 
 if [ $EXIT_CODE -ne 0 ]; then
     TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
