@@ -61,8 +61,9 @@ The monitor polls every 15 minutes during US market hours (9:25 AM–4:05 PM ET,
 **From anywhere in your terminal (global command):**
 
 ```bash
-sec-monitor-cron on    # activate
-sec-monitor-cron off   # disable
+sec-monitor-cron on      # activate
+sec-monitor-cron off     # disable
+sec-monitor-cron status  # check if active or inactive
 ```
 
 **Or from the project directory:**
@@ -70,6 +71,7 @@ sec-monitor-cron off   # disable
 ```bash
 ./cron_setup.sh on
 ./cron_setup.sh off
+./cron_setup.sh status
 ```
 
 Both commands print the resulting crontab so you can confirm the change.
