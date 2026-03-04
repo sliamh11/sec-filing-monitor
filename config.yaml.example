@@ -7,7 +7,7 @@
 # SEC EDGAR requires a User-Agent with your name and email.
 # This is mandatory — EDGAR will block requests without it.
 sec:
-  user_agent: "Liam sliamh11@gmail.com"
+  user_agent: "YourName your.email@example.com"
   rate_limit_delay: 0.15  # seconds between requests (SEC limit: 10/sec)
 
 # ── Form 4 (Insider Trades) ─────────────────────────────────
@@ -43,10 +43,10 @@ thirteenf:
 email:
   smtp_server: "smtp.gmail.com"
   smtp_port: 587
-  sender: "sliamh11@gmail.com"
+  sender: "your.email@gmail.com"
   # Gmail App Password — generate at: https://myaccount.google.com/apppasswords
-  app_password: "ptrv rqzs fnwf wxce"
-  recipient: "sliamh11@gmail.com"
+  app_password: "xxxx xxxx xxxx xxxx"
+  recipient: "your.email@gmail.com"
 
 # ── State File ───────────────────────────────────────────────
 state_file: "state.json"
