@@ -1,5 +1,6 @@
 """
-SEC EDGAR API client — handles Form 4 and 13F-HR fetching and parsing.
+SEC EDGAR API client — handles Form 4, 13F-HR, Form 8-K, and Schedule 13D/13G
+fetching and parsing.
 
 Uses the EDGAR full-text search (EFTS) API for discovery and
 fetches individual filings for detailed parsing.
@@ -84,6 +85,47 @@ class HoldingChange:
                 f"📊 {self.fund_name} {direction} {self.issuer_name} ({self.ticker}) "
                 f"by {self.change_pct:+.1%} — now ${self.current_value:,.0f}"
             )
+
+
+@dataclass
+class Form8K:
+    """Parsed Form 8-K material event filing."""
+    filing_url: str
+    filing_date: str
+    company_name: str
+    ticker: str
+    cik: str
+    item_codes: list  # e.g. ["1.01", "5.02"]
+    event_description: str
+
+    @property
+    def summary(self) -> str:
+        items = ", ".join(self.item_codes)
+        return (
+            f"{self.company_name} ({self.ticker}) — Items: {items} — "
+            f"{self.event_description[:100]}"
+        )
+
+
+@dataclass
+class Schedule13DG:
+    """Parsed Schedule 13D or 13G filing (5%+ ownership crossing)."""
+    filing_url: str
+    filing_date: str
+    filer_name: str
+    target_company: str
+    target_ticker: str
+    target_cik: str
+    form_type: str  # "SC 13D" or "SC 13G"
+    shares_pct: float
+    intent: str
+
+    @property
+    def summary(self) -> str:
+        return (
+            f"{self.form_type}: {self.filer_name} owns {self.shares_pct:.1f}% of "
+            f"{self.target_company} ({self.target_ticker}) — {self.intent[:80]}"
+        )
 
 
 # ── EDGAR API Client ────────────────────────────────────────
@@ -350,6 +392,251 @@ class EdgarClient:
         except Exception as e:
             logger.error(f"Failed to fetch 13F holdings: {e}")
             return []
+
+    # ── Form 8-K ─────────────────────────────────────────────
+
+    def search_form8k_filings(self, start_date: str, end_date: str, limit: int = 100) -> list[dict]:
+        """Search EDGAR for Form 8-K filings within a date range."""
+        params = {
+            "q": "",
+            "forms": "8-K",
+            "dateRange": "custom",
+            "startdt": start_date,
+            "enddt": end_date,
+            "from": 0,
+            "size": min(limit, 100),
+        }
+        logger.info(f"Searching Form 8-K filings: {start_date} to {end_date}")
+        try:
+            resp = self._get(self.EFTS_SEARCH_URL, params=params)
+            data = resp.json()
+            hits = data.get("hits", {}).get("hits", [])
+            logger.info(f"Found {len(hits)} Form 8-K filings")
+            return hits
+        except Exception as e:
+            logger.error(f"Form 8-K search failed: {e}")
+            return []
+
+    def fetch_8k_content(self, filing_url: str, company_name: str, ticker: str,
+                         cik: str, filing_date: str) -> Optional[Form8K]:
+        """
+        Fetch Form 8-K filing index, find the primary HTML document, and
+        extract item codes (e.g. ["1.01", "5.02"]) via regex.
+        Returns a Form8K or None if no items found.
+        """
+        import re
+        try:
+            if not filing_url.startswith("http"):
+                filing_url = f"https://www.sec.gov{filing_url}"
+
+            resp = self._get(filing_url)
+            index_content = resp.text
+
+            # Find .htm links from the EDGAR index page
+            htm_links = re.findall(r'href="(/Archives/edgar/data/[^"]*\.htm[l]?)"',
+                                   index_content, re.IGNORECASE)
+
+            doc_content = ""
+            primary_url = filing_url
+
+            for link in htm_links[:5]:
+                full_url = f"https://www.sec.gov{link}"
+                try:
+                    doc_resp = self._get(full_url)
+                    if re.search(r'[Ii]tem\s+\d+\.\d+', doc_resp.text):
+                        doc_content = doc_resp.text
+                        primary_url = full_url
+                        break
+                except Exception:
+                    continue
+
+            if not doc_content:
+                logger.debug(f"No 8-K item content found at {filing_url}")
+                return None
+
+            # Extract item codes (deduplicated, order-preserving)
+            raw_codes = re.findall(r'[Ii]tem\s+(\d+\.\d+)', doc_content)
+            seen_codes: set = set()
+            item_codes = []
+            for code in raw_codes:
+                if code not in seen_codes:
+                    seen_codes.add(code)
+                    item_codes.append(code)
+
+            if not item_codes:
+                return None
+
+            # Strip HTML and grab text after the first item header for description
+            plain_text = re.sub(r'<[^>]+>', ' ', doc_content)
+            plain_text = re.sub(r'\s+', ' ', plain_text)
+            desc_match = re.search(r'[Ii]tem\s+\d+\.\d+[^\w]*(.{20,300})', plain_text)
+            event_description = desc_match.group(1).strip()[:200] if desc_match else ""
+
+            return Form8K(
+                filing_url=primary_url,
+                filing_date=filing_date,
+                company_name=company_name,
+                ticker=ticker,
+                cik=cik,
+                item_codes=item_codes,
+                event_description=event_description,
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch 8-K content from {filing_url}: {e}")
+            return None
+
+    # ── Schedule 13D / 13G ───────────────────────────────────
+
+    def search_13dg_filings(self, start_date: str, end_date: str, limit: int = 50) -> list[dict]:
+        """Search EDGAR for Schedule 13D and 13G filings within a date range."""
+        params = {
+            "q": "",
+            "forms": "SC 13D,SC 13G",
+            "dateRange": "custom",
+            "startdt": start_date,
+            "enddt": end_date,
+            "from": 0,
+            "size": min(limit, 100),
+        }
+        logger.info(f"Searching Schedule 13D/13G filings: {start_date} to {end_date}")
+        try:
+            resp = self._get(self.EFTS_SEARCH_URL, params=params)
+            data = resp.json()
+            hits = data.get("hits", {}).get("hits", [])
+            logger.info(f"Found {len(hits)} Schedule 13D/13G filings")
+            return hits
+        except Exception as e:
+            logger.error(f"Schedule 13D/13G search failed: {e}")
+            return []
+
+    def fetch_13dg_content(self, filing_url: str, accession: str, cik: str,
+                           form_type: str, filing_date: str) -> Optional[Schedule13DG]:
+        """
+        Fetch Schedule 13D/13G filing index, find the primary document, and
+        extract filer name, target company, ownership percentage, and intent.
+        Tries XML parsing first, falls back to regex on plain text/HTML.
+        Returns a Schedule13DG or None on failure.
+        """
+        import re
+        try:
+            clean_cik = cik.lstrip("0")
+            clean_accession = accession.replace("-", "")
+            index_url = f"{self.ARCHIVES_BASE}/{clean_cik}/{clean_accession}/"
+
+            resp = self._get(index_url)
+            index_content = resp.text
+
+            # Find candidate documents (xml, htm, txt)
+            doc_links = re.findall(
+                r'href="(/Archives/edgar/data/[^"]*\.(?:xml|htm[l]?|txt))"',
+                index_content, re.IGNORECASE
+            )
+
+            doc_content = ""
+            for link in doc_links[:6]:
+                full_url = f"https://www.sec.gov{link}"
+                try:
+                    doc_resp = self._get(full_url)
+                    text = doc_resp.text
+                    # Look for 13D/G-specific keywords
+                    if any(kw in text for kw in [
+                        "nameOfIssuer", "NAME OF ISSUER", "PERCENT OF CLASS",
+                        "percentOfClass", "PURPOSE OF TRANSACTION",
+                    ]):
+                        doc_content = text
+                        break
+                except Exception:
+                    continue
+
+            if not doc_content:
+                logger.debug(f"No 13D/G cover page content found at {index_url}")
+                return None
+
+            filer_name = ""
+            target_company = ""
+            target_ticker = ""
+            shares_pct = 0.0
+            intent = ""
+
+            # Try XML parsing
+            try:
+                clean_xml = re.sub(r'xmlns[^"]*"[^"]*"', '', doc_content)
+                clean_xml = re.sub(r'<(/?)(\w+):', r'<\1', clean_xml)
+                root = ET.fromstring(clean_xml)
+                target_company = (
+                    _text(root, ".//nameOfIssuer") or
+                    _text(root, ".//issuerName") or ""
+                )
+                filer_name = (
+                    _text(root, ".//nameOfFiler") or
+                    _text(root, ".//reportingPersonName") or ""
+                )
+                pct_raw = (
+                    _text(root, ".//percentOfClass") or
+                    _text(root, ".//percentageOfClass") or ""
+                )
+                if pct_raw:
+                    m = re.search(r'[\d.]+', pct_raw)
+                    if m:
+                        shares_pct = float(m.group())
+                intent = (
+                    _text(root, ".//purposeOfTransaction") or
+                    _text(root, ".//purpose") or ""
+                )
+            except Exception:
+                pass
+
+            # Regex fallbacks for fields not found via XML
+            plain = re.sub(r'<[^>]+>', ' ', doc_content)
+            plain = re.sub(r'\s+', ' ', plain)
+
+            if not target_company:
+                m = re.search(
+                    r'(?:NAME OF ISSUER|nameOfIssuer)\s*[:\-]?\s*([^\n<]{2,80})',
+                    doc_content, re.IGNORECASE
+                )
+                target_company = m.group(1).strip() if m else ""
+
+            if not filer_name:
+                m = re.search(
+                    r'(?:NAME OF REPORTING PERSON|nameOfFiler)\s*[:\-]?\s*([^\n<]{2,80})',
+                    doc_content, re.IGNORECASE
+                )
+                filer_name = m.group(1).strip() if m else "Unknown"
+
+            if not shares_pct:
+                m = re.search(
+                    r'(?:PERCENT OF CLASS|percentOfClass|percentageOfClass)[^:\d]*([0-9]+\.?[0-9]*)\s*%?',
+                    doc_content, re.IGNORECASE
+                )
+                if m:
+                    try:
+                        shares_pct = float(m.group(1))
+                    except ValueError:
+                        pass
+
+            if not intent:
+                m = re.search(
+                    r'(?:PURPOSE OF TRANSACTION|purposeOfTransaction)\s*[:\-]?\s*(.{10,400}?)(?:\n\n|\Z)',
+                    plain, re.IGNORECASE | re.DOTALL
+                )
+                if m:
+                    intent = m.group(1).strip()[:200]
+
+            return Schedule13DG(
+                filing_url=filing_url,
+                filing_date=filing_date,
+                filer_name=filer_name or "Unknown",
+                target_company=target_company or "Unknown",
+                target_ticker=target_ticker,
+                target_cik=cik,
+                form_type=form_type,
+                shares_pct=shares_pct,
+                intent=intent,
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch 13D/G content from {filing_url}: {e}")
+            return None
 
     def _parse_13f_info_table(self, xml_content: str) -> list[dict]:
         """Parse 13F information table XML into holding dicts."""

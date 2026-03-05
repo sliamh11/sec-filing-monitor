@@ -22,8 +22,8 @@ from pathlib import Path
 
 import yaml
 
-from edgar import EdgarClient, InsiderTrade, HoldingChange
-from notifier import EmailNotifier, build_form4_email, build_13f_email
+from edgar import EdgarClient, InsiderTrade, HoldingChange, Form8K, Schedule13DG
+from notifier import EmailNotifier, build_form4_email, build_13f_email, build_8k_email, build_13dg_email
 
 # ── Logging ──────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ class StateManager:
                 return json.loads(self.path.read_text())
             except (json.JSONDecodeError, IOError):
                 logger.warning(f"Corrupted state file, starting fresh")
-        return {"seen_form4": [], "seen_13f": {}, "last_13f_holdings": {}}
+        return {"seen_form4": [], "seen_13f": {}, "last_13f_holdings": {}, "seen_8k": [], "seen_13dg": []}
 
     def save(self):
         self.path.write_text(json.dumps(self.data, indent=2))
@@ -78,6 +78,22 @@ class StateManager:
         self.data.setdefault("last_13f_holdings", {})[fund_cik] = {
             h["cusip"]: h for h in holdings if h.get("cusip")
         }
+
+    def is_8k_seen(self, filing_id: str) -> bool:
+        return filing_id in self.data.get("seen_8k", [])
+
+    def mark_8k_seen(self, filing_id: str):
+        self.data.setdefault("seen_8k", []).append(filing_id)
+        if len(self.data["seen_8k"]) > 10000:
+            self.data["seen_8k"] = self.data["seen_8k"][-5000:]
+
+    def is_13dg_seen(self, filing_id: str) -> bool:
+        return filing_id in self.data.get("seen_13dg", [])
+
+    def mark_13dg_seen(self, filing_id: str):
+        self.data.setdefault("seen_13dg", []).append(filing_id)
+        if len(self.data["seen_13dg"]) > 10000:
+            self.data["seen_13dg"] = self.data["seen_13dg"][-5000:]
 
 
 # ── Form 4 Processing ───────────────────────────────────────
@@ -278,6 +294,142 @@ def _compare_holdings(fund_name, fund_cik, filing_date, filing_url,
     return changes
 
 
+# ── Form 8-K Processing ──────────────────────────────────────
+
+def process_8k(client: EdgarClient, config: dict, state: StateManager,
+               start_date: str, end_date: str) -> list[Form8K]:
+    """Fetch, filter, and return interesting Form 8-K filings."""
+    cfg = config.get("form8k", {})
+    if not cfg.get("enabled", True):
+        logger.info("Form 8-K monitoring disabled, skipping")
+        return []
+
+    enabled_items = cfg.get("item_codes", ["1.01", "1.03", "1.05", "2.02", "2.06", "5.02"])
+    watchlist = [t.upper() for t in cfg.get("watchlist", [])]
+    scan_limit = cfg.get("scan_limit", 100)
+
+    hits = client.search_form8k_filings(start_date, end_date, limit=scan_limit)
+
+    results = []
+    for hit in hits:
+        source = hit.get("_source", {})
+        filing_id = hit.get("_id", "")
+
+        if state.is_8k_seen(filing_id):
+            continue
+
+        file_date = source.get("file_date", "")
+        file_url = source.get("file_url", "")
+        accession = source.get("adsh", "")
+        ciks = source.get("ciks", [])
+        cik = ciks[0].lstrip("0") if ciks else ""
+
+        # Extract company name from EFTS metadata
+        display_names = source.get("display_names", [])
+        if display_names and isinstance(display_names[0], dict):
+            company_name = display_names[0].get("name", "")
+        elif display_names:
+            company_name = str(display_names[0])
+        else:
+            company_name = source.get("entity_name", "Unknown")
+
+        # Extract ticker (may be absent)
+        tickers = source.get("tickers", [])
+        ticker = tickers[0].upper() if tickers else ""
+
+        # Apply watchlist filter early to skip unnecessary HTTP fetches
+        if watchlist and ticker and ticker not in watchlist:
+            state.mark_8k_seen(filing_id)
+            continue
+
+        if not file_url and cik and accession:
+            clean_accession = accession.replace("-", "")
+            file_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{clean_accession}/"
+
+        if not file_url:
+            state.mark_8k_seen(filing_id)
+            continue
+
+        filing = client.fetch_8k_content(file_url, company_name, ticker, cik, file_date)
+        state.mark_8k_seen(filing_id)
+
+        if not filing:
+            continue
+
+        # Filter by enabled item codes
+        if enabled_items and not any(code in filing.item_codes for code in enabled_items):
+            logger.debug(f"  ✗ 8-K filtered: no matching items {filing.item_codes}")
+            continue
+
+        results.append(filing)
+        logger.info(f"  ✓ 8-K: {filing.company_name} items={filing.item_codes}")
+
+    logger.info(f"Form 8-K: {len(results)} filings passed filters (from {len(hits)} filings)")
+    return results
+
+
+# ── Schedule 13D/13G Processing ──────────────────────────────
+
+def process_13dg(client: EdgarClient, config: dict, state: StateManager,
+                 start_date: str, end_date: str) -> list[Schedule13DG]:
+    """Fetch, filter, and return Schedule 13D/13G filings."""
+    cfg = config.get("schedule13dg", {})
+    if not cfg.get("enabled", True):
+        logger.info("Schedule 13D/13G monitoring disabled, skipping")
+        return []
+
+    min_pct = cfg.get("min_percentage", 5.0)
+    watchlist = [t.upper() for t in cfg.get("watchlist", [])]
+    scan_limit = cfg.get("scan_limit", 50)
+
+    hits = client.search_13dg_filings(start_date, end_date, limit=scan_limit)
+
+    results = []
+    for hit in hits:
+        source = hit.get("_source", {})
+        filing_id = hit.get("_id", "")
+
+        if state.is_13dg_seen(filing_id):
+            continue
+
+        file_date = source.get("file_date", "")
+        file_url = source.get("file_url", "")
+        accession = source.get("adsh", "")
+        form_type = source.get("form_type", "SC 13D")
+        ciks = source.get("ciks", [])
+        cik = ciks[0].lstrip("0") if ciks else ""
+
+        if not file_url and cik and accession:
+            clean_accession = accession.replace("-", "")
+            file_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{clean_accession}/"
+
+        if not file_url or not accession:
+            state.mark_13dg_seen(filing_id)
+            continue
+
+        filing = client.fetch_13dg_content(file_url, accession, cik, form_type, file_date)
+        state.mark_13dg_seen(filing_id)
+
+        if not filing:
+            continue
+
+        # Filter by ownership threshold
+        if filing.shares_pct < min_pct:
+            logger.debug(f"  ✗ 13D/G filtered: {filing.shares_pct:.1f}% < {min_pct:.1f}%")
+            continue
+
+        # Filter by watchlist
+        if watchlist and filing.target_ticker and filing.target_ticker.upper() not in watchlist:
+            logger.debug(f"  ✗ 13D/G filtered: {filing.target_ticker} not in watchlist")
+            continue
+
+        results.append(filing)
+        logger.info(f"  ✓ {filing.form_type}: {filing.filer_name} owns {filing.shares_pct:.1f}% of {filing.target_company}")
+
+    logger.info(f"Schedule 13D/13G: {len(results)} filings passed filters (from {len(hits)} filings)")
+    return results
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -363,7 +515,7 @@ def main():
     trades = process_form4(client, config, state, start_date, end_date)
 
     if trades and notifier:
-        subject, html = build_form4_email(trades)
+        subject, html = build_form4_email(trades, config.get("form4", {}))
         notifier.send(subject, html)
     elif trades:
         logger.info(f"[DRY RUN] Would send email with {len(trades)} trades:")
@@ -381,15 +533,40 @@ def main():
         for c in changes:
             logger.info(f"  {c.summary}")
 
+    # Process Form 8-K
+    eightk_filings = process_8k(client, config, state, start_date, end_date)
+
+    if eightk_filings and notifier:
+        subject, html = build_8k_email(eightk_filings)
+        notifier.send(subject, html)
+    elif eightk_filings:
+        logger.info(f"[DRY RUN] Would send email with {len(eightk_filings)} Form 8-K filings:")
+        for f in eightk_filings:
+            logger.info(f"  {f.summary}")
+
+    # Process Schedule 13D/13G
+    dg_filings = process_13dg(client, config, state, start_date, end_date)
+
+    if dg_filings and notifier:
+        subject, html = build_13dg_email(dg_filings)
+        notifier.send(subject, html)
+    elif dg_filings:
+        logger.info(f"[DRY RUN] Would send email with {len(dg_filings)} Schedule 13D/13G filings:")
+        for f in dg_filings:
+            logger.info(f"  {f.summary}")
+
     # Save state
     state.save()
 
     # Summary
-    total = len(trades) + len(changes)
+    total = len(trades) + len(changes) + len(eightk_filings) + len(dg_filings)
     if total == 0:
         logger.info("No interesting filings found today. 💤")
     else:
-        logger.info(f"Done! {len(trades)} insider trades + {len(changes)} holding changes")
+        logger.info(
+            f"Done! {len(trades)} insider trades + {len(changes)} 13F changes + "
+            f"{len(eightk_filings)} 8-K events + {len(dg_filings)} 13D/G filings"
+        )
 
 
 if __name__ == "__main__":

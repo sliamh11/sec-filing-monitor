@@ -2,28 +2,58 @@
 PROJECT_DIR="/Users/liam10play/Desktop/אישי/Coding Projects/sec-filing-monitor"
 SCRIPT="$PROJECT_DIR/run_monitor.sh"
 MONITOR_LOG="$PROJECT_DIR/monitor.log"
-CRON_LINE="*/15 * * * 1-5 \"$SCRIPT\" >> \"$MONITOR_LOG\" 2>&1"
+PLIST_LABEL="com.sec-monitor"
+PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 case "$1" in
     on)
         chmod +x "$SCRIPT"
-        if crontab -l 2>/dev/null | grep -qF "$SCRIPT"; then
-            echo "SEC Monitor is already active."
-        else
-            (crontab -l 2>/dev/null; echo "$CRON_LINE") | crontab -
-            echo "SEC Monitor Activated!"
-        fi
+
+        # Remove legacy crontab entry if present
+        crontab -l 2>/dev/null | grep -vF "$SCRIPT" | crontab - 2>/dev/null
+
+        # Write launchd plist
+        cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$SCRIPT</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>StandardOutPath</key>
+    <string>$MONITOR_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>$MONITOR_LOG</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+EOF
+
+        launchctl unload "$PLIST_PATH" 2>/dev/null
+        launchctl load "$PLIST_PATH"
+        echo "SEC Monitor Activated!"
         ;;
+
     off)
-        if crontab -l 2>/dev/null | grep -qF "$SCRIPT"; then
-            crontab -l 2>/dev/null | grep -vF "$SCRIPT" | crontab -
+        if [ -f "$PLIST_PATH" ]; then
+            launchctl unload "$PLIST_PATH" 2>/dev/null
+            rm -f "$PLIST_PATH"
             echo "SEC Monitor Deactivated."
         else
             echo "SEC Monitor is already inactive."
         fi
         ;;
+
     status)
-        if crontab -l 2>/dev/null | grep -qF "$SCRIPT"; then
+        if launchctl list | grep -q "$PLIST_LABEL"; then
             echo "SEC Monitor: ACTIVE (polling every 15 min, Mon-Fri ET market hours)"
         else
             echo "SEC Monitor: INACTIVE"
@@ -52,7 +82,6 @@ case "$1" in
         ET_MINS=$((10#$ET_H * 60 + 10#$ET_M))
         DAY=$(TZ="America/New_York" date "+%u")  # 1=Mon, 7=Sun
 
-        # Next 15-min slot
         NEXT_MINS=$(( (ET_MINS / 15 + 1) * 15 ))
 
         if [ "$DAY" -ge 6 ] || [ "$NEXT_MINS" -gt 965 ]; then
@@ -66,6 +95,7 @@ case "$1" in
         fi
         echo "(Current ET time: $ET_NOW)"
         ;;
+
     *)
         echo "Usage: $0 on|off|status"
         exit 1

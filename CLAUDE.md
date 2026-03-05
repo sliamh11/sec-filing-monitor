@@ -24,7 +24,7 @@ python sec_monitor.py --date 2024-01-15
 python sec_monitor.py -v  # verbose/debug logging
 ```
 
-Production runs via cron (e.g., `0 19 * * 1-5 cd /path && python sec_monitor.py >> monitor.log 2>&1`).
+Production runs via macOS launchd every 15 min during market hours — managed by `cron_setup.sh on/off/status`.
 
 There are no tests, no linter configuration, and no build step.
 

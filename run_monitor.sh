@@ -12,7 +12,7 @@ fi
 cd "$PROJECT_DIR" || exit 1
 
 # Run monitor: capture stderr to temp file so we can inspect it,
-# then forward it to stdout (→ monitor.log via cron redirect)
+# then forward it to stdout (→ monitor.log via launchd StandardOutPath)
 STDERR_FILE=$(mktemp)
 "$VENV_PYTHON" "$PROJECT_DIR/sec_monitor.py" --days 1 2>"$STDERR_FILE"
 EXIT_CODE=$?

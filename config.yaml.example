@@ -39,6 +39,23 @@ thirteenf:
   large_change_threshold: 0.25     # 25% position change threshold
   scan_limit: 50
 
+# ── Form 8-K (Material Corporate Events) ────────────────────
+form8k:
+  enabled: true
+  # Item codes to monitor (empty list = all items):
+  # 1.01 Material Agreement | 1.03 Bankruptcy | 1.05 Cybersecurity
+  # 2.02 Earnings Results   | 2.06 Impairment  | 5.02 Executive Change
+  item_codes: ["1.01", "1.03", "1.05", "2.02", "2.06", "5.02"]
+  watchlist: []   # Optional: ["AAPL", "MSFT"] — empty = all companies
+  scan_limit: 100
+
+# ── Schedule 13D / 13G (5%+ Ownership Stakes) ───────────────
+schedule13dg:
+  enabled: true
+  min_percentage: 5.0    # Minimum ownership % to alert on (default matches the 5% threshold)
+  watchlist: []          # Optional: ["AAPL", "MSFT"] — empty = all companies
+  scan_limit: 50
+
 # ── Email Notifications ──────────────────────────────────────
 email:
   smtp_server: "smtp.gmail.com"
