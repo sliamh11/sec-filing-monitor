@@ -2,7 +2,7 @@
 PROJECT_DIR="/Users/liam10play/Desktop/אישי/Coding Projects/sec-filing-monitor"
 SCRIPT="$PROJECT_DIR/run_monitor.sh"
 MONITOR_LOG="$PROJECT_DIR/monitor.log"
-CRON_LINE="*/15 * * * 1-5 $SCRIPT >> $MONITOR_LOG 2>&1"
+CRON_LINE="*/15 * * * 1-5 \"$SCRIPT\" >> \"$MONITOR_LOG\" 2>&1"
 
 case "$1" in
     on)
