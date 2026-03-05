@@ -17,13 +17,13 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
 from edgar import EdgarClient, InsiderTrade, HoldingChange, Form8K, Schedule13DG
-from notifier import EmailNotifier, build_form4_email, build_13f_email, build_8k_email, build_13dg_email
+from notifier import EmailNotifier, build_form4_email, build_13f_email, build_8k_email, build_13dg_email, build_daily_summary_email
 
 # ── Logging ──────────────────────────────────────────────────
 
@@ -94,6 +94,70 @@ class StateManager:
         self.data.setdefault("seen_13dg", []).append(filing_id)
         if len(self.data["seen_13dg"]) > 10000:
             self.data["seen_13dg"] = self.data["seen_13dg"][-5000:]
+
+    def get_last_scan_time(self) -> datetime | None:
+        raw = self.data.get("last_scan_time")
+        if raw:
+            try:
+                return datetime.fromisoformat(raw)
+            except ValueError:
+                pass
+        return None
+
+    def set_last_scan_time(self, dt: datetime):
+        self.data["last_scan_time"] = dt.isoformat(timespec="seconds")
+
+    def get_today_results(self, today: str) -> dict:
+        stored = self.data.get("today_results", {})
+        if stored.get("date") != today:
+            return {"date": today, "form4": [], "thirteenf": [], "form8k": [], "schedule13dg": []}
+        return stored
+
+    def set_today_results(self, results: dict):
+        self.data["today_results"] = results
+
+    def reset_today_results(self, today: str):
+        self.data["today_results"] = {
+            "date": today, "form4": [], "thirteenf": [], "form8k": [], "schedule13dg": []
+        }
+
+
+# ── Serialization helpers (dataclass → dict for today_results) ───────────────
+
+def _trade_to_dict(t) -> dict:
+    return {
+        "filing_date": t.filing_date, "company_name": t.company_name,
+        "ticker": t.ticker, "acquired_or_disposed": t.acquired_or_disposed,
+        "insider_name": t.insider_name, "insider_title": t.insider_title,
+        "shares": t.shares, "price_per_share": t.price_per_share,
+        "total_value": t.total_value, "filing_url": t.filing_url,
+    }
+
+def _change_to_dict(c) -> dict:
+    return {
+        "fund_name": c.fund_name, "fund_cik": c.fund_cik,
+        "filing_date": c.filing_date, "filing_url": c.filing_url,
+        "issuer_name": c.issuer_name, "ticker": c.ticker,
+        "change_type": c.change_type, "current_value": c.current_value,
+        "previous_value": c.previous_value, "change_pct": c.change_pct,
+    }
+
+def _8k_to_dict(f) -> dict:
+    return {
+        "filing_date": f.filing_date, "company_name": f.company_name,
+        "ticker": f.ticker, "cik": f.cik,
+        "item_codes": f.item_codes, "event_description": f.event_description,
+        "filing_url": f.filing_url,
+    }
+
+def _13dg_to_dict(f) -> dict:
+    return {
+        "filing_date": f.filing_date, "filer_name": f.filer_name,
+        "target_company": f.target_company, "target_ticker": f.target_ticker,
+        "target_cik": f.target_cik, "form_type": f.form_type,
+        "shares_pct": f.shares_pct, "intent": f.intent,
+        "filing_url": f.filing_url,
+    }
 
 
 # ── Form 4 Processing ───────────────────────────────────────
@@ -475,7 +539,8 @@ def send_test_email(config: dict):
 def main():
     parser = argparse.ArgumentParser(description="SEC Filing Monitor")
     parser.add_argument("--date", help="Check filings for a specific date (YYYY-MM-DD)")
-    parser.add_argument("--days", type=int, default=1, help="Check last N days (default: 1)")
+    parser.add_argument("--days", type=int, default=None, help="Check last N days")
+    parser.add_argument("--end-of-day", action="store_true", help="Send daily summary and reset today's results")
     parser.add_argument("--test-email", action="store_true", help="Send a test email")
     parser.add_argument("--dry-run", action="store_true", help="Find filings but don't send emails")
     parser.add_argument("--config", default="config.yaml", help="Path to config file")
@@ -493,22 +558,40 @@ def main():
         send_test_email(config)
         return
 
+    # Initialize state early (needed to read last_scan_time for auto date range)
+    today_str = date.today().isoformat()
+    state = StateManager(config.get("state_file", "state.json"))
+
     # Determine date range
     if args.date:
         start_date = end_date = args.date
-    else:
-        end_date = date.today().isoformat()
+    elif args.days is not None:
+        end_date = today_str
         start_date = (date.today() - timedelta(days=args.days)).isoformat()
+    else:
+        # Auto mode: determine range from last_scan_time
+        end_date = today_str
+        last_scan = state.get_last_scan_time()
+        if last_scan is None:
+            # Never run — safe default: yesterday + today
+            start_date = (date.today() - timedelta(days=1)).isoformat()
+        elif last_scan.date() < date.today():
+            # First scan of the day — cover the full gap (handles weekends too)
+            gap_days = (date.today() - last_scan.date()).days
+            start_date = (date.today() - timedelta(days=gap_days)).isoformat()
+            logger.info(f"First scan of day (last: {last_scan.date()}) — gap: {gap_days}d")
+        else:
+            # Mid-day scan — today only (dedup handles re-sends)
+            start_date = today_str
 
     logger.info(f"═══ SEC Filing Monitor ═══")
     logger.info(f"Checking filings: {start_date} to {end_date}")
 
-    # Initialize components
+    # Initialize client
     client = EdgarClient(
         user_agent=config["sec"]["user_agent"],
         rate_limit_delay=config["sec"].get("rate_limit_delay", 0.15),
     )
-    state = StateManager(config.get("state_file", "state.json"))
     notifier = EmailNotifier(config["email"]) if not args.dry_run else None
 
     # Process Form 4
@@ -555,18 +638,43 @@ def main():
         for f in dg_filings:
             logger.info(f"  {f.summary}")
 
-    # Save state
+    # Accumulate into today_results (auto mode only — not manual --date/--days overrides)
+    is_auto_mode = not args.date and args.days is None
+    if is_auto_mode:
+        today_results = state.get_today_results(today_str)
+        today_results["form4"].extend(_trade_to_dict(t) for t in trades)
+        today_results["thirteenf"].extend(_change_to_dict(c) for c in changes)
+        today_results["form8k"].extend(_8k_to_dict(f) for f in eightk_filings)
+        today_results["schedule13dg"].extend(_13dg_to_dict(f) for f in dg_filings)
+        state.set_today_results(today_results)
+
+    # Update last_scan_time and save
+    state.set_last_scan_time(datetime.now().replace(microsecond=0))
     state.save()
 
-    # Summary
+    # End-of-day summary
+    if args.end_of_day:
+        today_results = state.get_today_results(today_str)
+        total_eod = sum(len(today_results.get(k, [])) for k in ("form4", "thirteenf", "form8k", "schedule13dg"))
+        logger.info(f"End-of-day summary: {total_eod} total findings today")
+        if total_eod > 0 and notifier:
+            subject, html = build_daily_summary_email(today_results, config)
+            notifier.send(subject, html)
+        elif total_eod > 0 and args.dry_run:
+            logger.info(f"[DRY RUN] Would send end-of-day summary with {total_eod} findings")
+        else:
+            logger.info("No findings today — skipping summary email")
+        if not args.dry_run:
+            state.reset_today_results(today_str)
+            state.save()
+
+    # Log scan summary
     total = len(trades) + len(changes) + len(eightk_filings) + len(dg_filings)
     if total == 0:
-        logger.info("No interesting filings found today. 💤")
+        logger.info("No interesting filings found in this scan. 💤")
     else:
-        logger.info(
-            f"Done! {len(trades)} insider trades + {len(changes)} 13F changes + "
-            f"{len(eightk_filings)} 8-K events + {len(dg_filings)} 13D/G filings"
-        )
+        logger.info(f"Done! {len(trades)} trades + {len(changes)} 13F + "
+                    f"{len(eightk_filings)} 8-K + {len(dg_filings)} 13D/G")
 
 
 if __name__ == "__main__":

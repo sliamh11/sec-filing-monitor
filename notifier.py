@@ -289,6 +289,231 @@ def build_13dg_email(filings: list) -> tuple[str, str]:
     return subject, html
 
 
+def build_daily_summary_email(today_results: dict, config: dict = None) -> tuple[str, str]:
+    """
+    Build subject and HTML body for the end-of-day summary digest.
+    today_results contains plain dicts (not dataclasses).
+    Returns (subject, html_body).
+    """
+    report_date = today_results.get("date", date.today().isoformat())
+    form4_items = today_results.get("form4", [])
+    thirteenf_items = today_results.get("thirteenf", [])
+    form8k_items = today_results.get("form8k", [])
+    schedule13dg_items = today_results.get("schedule13dg", [])
+    total = len(form4_items) + len(thirteenf_items) + len(form8k_items) + len(schedule13dg_items)
+
+    subject = f"📋 SEC Daily Summary — {total} findings ({report_date})"
+
+    # Counts banner
+    counts_html = f"""
+    <div style="display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap;">
+        <div style="background:#dbeafe; border-radius:8px; padding:12px 20px; text-align:center; min-width:80px;">
+            <div style="font-size:22px; font-weight:700; color:#1d4ed8;">{len(form4_items)}</div>
+            <div style="font-size:11px; color:#3b82f6; text-transform:uppercase; letter-spacing:.5px;">Form 4</div>
+        </div>
+        <div style="background:#dcfce7; border-radius:8px; padding:12px 20px; text-align:center; min-width:80px;">
+            <div style="font-size:22px; font-weight:700; color:#15803d;">{len(thirteenf_items)}</div>
+            <div style="font-size:11px; color:#22c55e; text-transform:uppercase; letter-spacing:.5px;">13F</div>
+        </div>
+        <div style="background:#fef9c3; border-radius:8px; padding:12px 20px; text-align:center; min-width:80px;">
+            <div style="font-size:22px; font-weight:700; color:#a16207;">{len(form8k_items)}</div>
+            <div style="font-size:11px; color:#f59e0b; text-transform:uppercase; letter-spacing:.5px;">Form 8-K</div>
+        </div>
+        <div style="background:#fce7f3; border-radius:8px; padding:12px 20px; text-align:center; min-width:80px;">
+            <div style="font-size:22px; font-weight:700; color:#be185d;">{len(schedule13dg_items)}</div>
+            <div style="font-size:11px; color:#ec4899; text-transform:uppercase; letter-spacing:.5px;">13D/G</div>
+        </div>
+    </div>"""
+
+    # Form 4 section
+    form4_section = ""
+    if form4_items:
+        rows = ""
+        for t in form4_items:
+            action_color = "#22c55e" if t["acquired_or_disposed"] == "A" else "#ef4444"
+            action_label = "BUY" if t["acquired_or_disposed"] == "A" else "SELL"
+            rows += f"""
+            <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 8px;">{t["filing_date"]}</td>
+                <td style="padding: 8px;">{t["company_name"]}</td>
+                <td style="padding: 8px; font-weight: 600;">{t["ticker"]}</td>
+                <td style="padding: 8px; color: {action_color}; font-weight: 600;">{action_label}</td>
+                <td style="padding: 8px;">{t["insider_name"]}<br>
+                    <span style="color:#6b7280; font-size:11px;">{t["insider_title"]}</span></td>
+                <td style="padding: 8px; text-align: right;">{t["shares"]:,.0f}</td>
+                <td style="padding: 8px; text-align: right;">${t["price_per_share"]:,.2f}</td>
+                <td style="padding: 8px; text-align: right;">${t["total_value"]:,.0f}</td>
+                <td style="padding: 8px;"><a href="{t["filing_url"]}" style="color:#3b82f6;">View</a></td>
+            </tr>"""
+        form4_section = f"""
+        <h3 style="color:#1d4ed8; border-left:4px solid #3b82f6; padding-left:10px; margin-top:28px;">
+            📊 Insider Trades ({len(form4_items)})
+        </h3>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+                <tr style="background:#f0f9ff; border-bottom:2px solid #bfdbfe;">
+                    <th style="padding:8px; text-align:left;">Date</th>
+                    <th style="padding:8px; text-align:left;">Company</th>
+                    <th style="padding:8px; text-align:left;">Ticker</th>
+                    <th style="padding:8px; text-align:left;">Buy/Sell</th>
+                    <th style="padding:8px; text-align:left;">Insider</th>
+                    <th style="padding:8px; text-align:right;">Shares</th>
+                    <th style="padding:8px; text-align:right;">Price</th>
+                    <th style="padding:8px; text-align:right;">Value</th>
+                    <th style="padding:8px;">Filing</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>"""
+
+    # 13F section
+    thirteenf_section = ""
+    if thirteenf_items:
+        type_colors = {
+            "new_position": ("#22c55e", "🆕 NEW"),
+            "exited": ("#ef4444", "🚪 EXIT"),
+            "large_increase": ("#3b82f6", "📈 UP"),
+            "large_decrease": ("#f59e0b", "📉 DOWN"),
+        }
+        rows = ""
+        for c in thirteenf_items:
+            color, label = type_colors.get(c["change_type"], ("#6b7280", c["change_type"]))
+            pct = f"{c['change_pct']:+.1%}" if c["change_pct"] is not None else "—"
+            rows += f"""
+            <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 8px; font-weight:600;">{c["fund_name"]}</td>
+                <td style="padding: 8px;">{c["issuer_name"]}</td>
+                <td style="padding: 8px;">{c["ticker"]}</td>
+                <td style="padding: 8px; color:{color}; font-weight:600;">{label}</td>
+                <td style="padding: 8px; text-align:right;">${c["current_value"]:,.0f}</td>
+                <td style="padding: 8px; text-align:right;">{pct}</td>
+                <td style="padding: 8px;"><a href="{c["filing_url"]}" style="color:#3b82f6;">View</a></td>
+            </tr>"""
+        thirteenf_section = f"""
+        <h3 style="color:#7c3aed; border-left:4px solid #8b5cf6; padding-left:10px; margin-top:28px;">
+            🏦 13F Holdings Changes ({len(thirteenf_items)})
+        </h3>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+                <tr style="background:#f5f3ff; border-bottom:2px solid #ddd6fe;">
+                    <th style="padding:8px; text-align:left;">Fund</th>
+                    <th style="padding:8px; text-align:left;">Issuer</th>
+                    <th style="padding:8px; text-align:left;">Ticker</th>
+                    <th style="padding:8px; text-align:left;">Change</th>
+                    <th style="padding:8px; text-align:right;">Value</th>
+                    <th style="padding:8px; text-align:right;">% Change</th>
+                    <th style="padding:8px;">Filing</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>"""
+
+    # 8-K section
+    form8k_section = ""
+    if form8k_items:
+        item_labels = {
+            "1.01": "Material Agreement", "1.02": "Termination",
+            "1.03": "Bankruptcy", "1.05": "Cybersecurity",
+            "2.01": "Acquisition", "2.02": "Financial Results",
+            "2.06": "Impairment", "5.02": "Executive Change", "8.01": "Other",
+        }
+        rows = ""
+        for f in form8k_items:
+            badges = "".join(
+                f'<span style="display:inline-block;background:#dbeafe;color:#1d4ed8;'
+                f'border-radius:4px;padding:1px 5px;font-size:11px;margin:1px;">'
+                f'{code} {item_labels.get(code, code)}</span>'
+                for code in f["item_codes"]
+            )
+            desc = f["event_description"][:100] + "…" if len(f["event_description"]) > 100 else f["event_description"]
+            rows += f"""
+            <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 8px;">{f["filing_date"]}</td>
+                <td style="padding: 8px; font-weight:600;">{f["company_name"]}</td>
+                <td style="padding: 8px;">{f["ticker"] or "—"}</td>
+                <td style="padding: 8px;">{badges}</td>
+                <td style="padding: 8px; color:#6b7280; font-size:12px;">{desc}</td>
+                <td style="padding: 8px;"><a href="{f["filing_url"]}" style="color:#3b82f6;">View</a></td>
+            </tr>"""
+        form8k_section = f"""
+        <h3 style="color:#b45309; border-left:4px solid #f59e0b; padding-left:10px; margin-top:28px;">
+            ⚡ Form 8-K Events ({len(form8k_items)})
+        </h3>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+                <tr style="background:#fffbeb; border-bottom:2px solid #fde68a;">
+                    <th style="padding:8px; text-align:left;">Date</th>
+                    <th style="padding:8px; text-align:left;">Company</th>
+                    <th style="padding:8px; text-align:left;">Ticker</th>
+                    <th style="padding:8px; text-align:left;">Items</th>
+                    <th style="padding:8px; text-align:left;">Description</th>
+                    <th style="padding:8px;">Filing</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>"""
+
+    # 13D/G section
+    schedule13dg_section = ""
+    if schedule13dg_items:
+        rows = ""
+        for f in schedule13dg_items:
+            form_color = "#ef4444" if "13D" in f["form_type"] else "#8b5cf6"
+            pct_str = f"{f['shares_pct']:.1f}%" if f["shares_pct"] else "—"
+            intent_short = f["intent"][:80] + "…" if len(f["intent"]) > 80 else f["intent"]
+            rows += f"""
+            <tr style="border-bottom: 1px solid #e5e7eb;">
+                <td style="padding: 8px;">{f["filing_date"]}</td>
+                <td style="padding: 8px; color:{form_color}; font-weight:600;">{f["form_type"]}</td>
+                <td style="padding: 8px;">{f["filer_name"]}</td>
+                <td style="padding: 8px; font-weight:600;">{f["target_company"]}</td>
+                <td style="padding: 8px;">{f["target_ticker"] or "—"}</td>
+                <td style="padding: 8px; font-weight:600; text-align:right;">{pct_str}</td>
+                <td style="padding: 8px; color:#6b7280; font-size:12px;">{intent_short}</td>
+                <td style="padding: 8px;"><a href="{f["filing_url"]}" style="color:#3b82f6;">View</a></td>
+            </tr>"""
+        schedule13dg_section = f"""
+        <h3 style="color:#be185d; border-left:4px solid #ec4899; padding-left:10px; margin-top:28px;">
+            🎯 Schedule 13D/13G ({len(schedule13dg_items)})
+        </h3>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+                <tr style="background:#fdf4ff; border-bottom:2px solid #f5d0fe;">
+                    <th style="padding:8px; text-align:left;">Date</th>
+                    <th style="padding:8px; text-align:left;">Form</th>
+                    <th style="padding:8px; text-align:left;">Filer</th>
+                    <th style="padding:8px; text-align:left;">Target</th>
+                    <th style="padding:8px; text-align:left;">Ticker</th>
+                    <th style="padding:8px; text-align:right;">% Owned</th>
+                    <th style="padding:8px; text-align:left;">Intent</th>
+                    <th style="padding:8px;">Filing</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>"""
+
+    html = f"""
+    <html>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                 max-width:1100px; margin:0 auto; padding:20px; color:#1f2937;">
+        <h2 style="color:#111827; border-bottom:2px solid #6366f1; padding-bottom:10px;">
+            📋 SEC Daily Summary — {report_date}
+        </h2>
+        <p style="color:#6b7280;">{total} total findings across all filing types today</p>
+        {counts_html}
+        {form4_section}
+        {thirteenf_section}
+        {form8k_section}
+        {schedule13dg_section}
+        <p style="color:#9ca3af; font-size:12px; margin-top:30px; border-top:1px solid #e5e7eb; padding-top:10px;">
+            End-of-Day Summary • Data from EDGAR
+        </p>
+    </body>
+    </html>"""
+
+    return subject, html
+
+
 def build_13f_email(changes: list) -> tuple[str, str]:
     """
     Build subject and HTML body for 13F holding change alerts.

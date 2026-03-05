@@ -11,10 +11,17 @@ fi
 
 cd "$PROJECT_DIR" || exit 1
 
+# Detect end-of-day: if next 15-min mark > market close (965 = 4:05 PM ET)
+NEXT_MARK=$((ET_MINUTES + 15))
+EOD_FLAG=""
+if [ "$NEXT_MARK" -gt 965 ]; then
+    EOD_FLAG="--end-of-day"
+fi
+
 # Run monitor: capture stderr to temp file so we can inspect it,
 # then forward it to stdout (→ monitor.log via launchd StandardOutPath)
 STDERR_FILE=$(mktemp)
-"$VENV_PYTHON" "$PROJECT_DIR/sec_monitor.py" --days 1 2>"$STDERR_FILE"
+"$VENV_PYTHON" "$PROJECT_DIR/sec_monitor.py" $EOD_FLAG 2>"$STDERR_FILE"
 EXIT_CODE=$?
 
 cat "$STDERR_FILE"  # forward Python log output to stdout → monitor.log
