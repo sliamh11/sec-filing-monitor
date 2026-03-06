@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-PROJECT_DIR="/Users/liam10play/Desktop/אישי/Coding Projects/sec-filing-monitor"
+PROJECT_DIR="/Users/liam10play/Dev/sec-filing-monitor"
 VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
 ERRORS_LOG="$PROJECT_DIR/errors.log"
 
@@ -11,10 +11,16 @@ fi
 
 cd "$PROJECT_DIR" || exit 1
 
-# Detect end-of-day: if next 15-min mark > market close (965 = 4:05 PM ET)
-NEXT_MARK=$((ET_MINUTES + 15))
+# Verify we can access the venv before attempting to run Python
+if ! test -r "$VENV_PYTHON"; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] sec_monitor: Cannot access venv — check Full Disk Access in System Settings (Privacy & Security)" >&2
+    exit 1
+fi
+
+# Detect end-of-day: trigger from 3:45 PM ET onwards (945 min)
+# Wide window handles launchd timing drift — reset_today_results prevents duplicate sends
 EOD_FLAG=""
-if [ "$NEXT_MARK" -gt 965 ]; then
+if [ "$ET_MINUTES" -ge 945 ]; then
     EOD_FLAG="--end-of-day"
 fi
 

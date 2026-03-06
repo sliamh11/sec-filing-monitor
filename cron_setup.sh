@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-PROJECT_DIR="/Users/liam10play/Desktop/אישי/Coding Projects/sec-filing-monitor"
+PROJECT_DIR="/Users/liam10play/Dev/sec-filing-monitor"
 SCRIPT="$PROJECT_DIR/run_monitor.sh"
 MONITOR_LOG="$PROJECT_DIR/monitor.log"
 PLIST_LABEL="com.sec-monitor"
@@ -36,6 +36,20 @@ case "$1" in
 </dict>
 </plist>
 EOF
+
+        # Pre-flight: verify bash can access the project directory
+        if ! /bin/bash -c "test -r '$PROJECT_DIR/run_monitor.sh'" 2>/dev/null; then
+            echo ""
+            echo "⚠️  WARNING: macOS is blocking /bin/bash from accessing this directory."
+            echo "   Scheduled runs will fail silently with 'Operation not permitted'."
+            echo ""
+            echo "   Fix (one-time):"
+            echo "   1. Open System Settings → Privacy & Security → Full Disk Access"
+            echo "   2. Click '+', press Cmd+Shift+G, type /bin/bash, click Open"
+            echo "   3. Enable the toggle for /bin/bash"
+            echo "   4. Run: ./cron_setup.sh on"
+            echo ""
+        fi
 
         launchctl unload "$PLIST_PATH" 2>/dev/null
         launchctl load "$PLIST_PATH"
@@ -94,6 +108,14 @@ EOF
             printf "Next fetch:  Today at %02d:%02d ET\n" "$NEXT_H" "$NEXT_M"
         fi
         echo "(Current ET time: $ET_NOW)"
+
+        # File access permission check
+        echo ""
+        if /bin/bash -c "test -r '$PROJECT_DIR/run_monitor.sh'" 2>/dev/null; then
+            echo "  File access: ✅ OK"
+        else
+            echo "  File access: ❌ BLOCKED (grant Full Disk Access to /bin/bash in System Settings)"
+        fi
         ;;
 
     *)
