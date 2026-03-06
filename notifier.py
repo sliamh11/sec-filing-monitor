@@ -102,7 +102,7 @@ def build_form4_email(trades: list, form4_config: dict = None) -> tuple[str, str
             <td style="padding: 10px;">{t.insider_name}<br>
                 <span style="color: #6b7280; font-size: 12px;">{t.insider_title}</span></td>
             <td style="padding: 10px; text-align: right;">{t.shares:,.0f}</td>
-            <td style="padding: 10px; text-align: right;">${t.price_per_share:,.2f}</td>
+            <td style="padding: 10px; text-align: right;">${t.price_per_share:,.2f}{"" if not t.price_range else f"<br><span style='color:#6b7280;font-size:11px;'>range {t.price_range}</span>"}</td>
             <td style="padding: 10px; text-align: right;">${t.total_value:,.0f}</td>
             <td style="padding: 10px;">
                 <a href="{t.filing_url}" style="color: #3b82f6;">View</a></td>
@@ -126,7 +126,7 @@ def build_form4_email(trades: list, form4_config: dict = None) -> tuple[str, str
                     <th style="padding: 10px; text-align: left;">Buy / Sell</th>
                     <th style="padding: 10px; text-align: left;">Insider</th>
                     <th style="padding: 10px; text-align: right;">Shares</th>
-                    <th style="padding: 10px; text-align: right;">Price / Share</th>
+                    <th style="padding: 10px; text-align: right;">Price</th>
                     <th style="padding: 10px; text-align: right;">Total Value</th>
                     <th style="padding: 10px;">Filing</th>
                 </tr>

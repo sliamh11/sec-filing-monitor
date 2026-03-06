@@ -38,6 +38,7 @@ class InsiderTrade:
     shares: float
     price_per_share: float
     total_value: float
+    price_range: Optional[str] = None  # set by aggregate_trades for multi-tranche groups
 
     @property
     def is_purchase(self) -> bool:
@@ -46,10 +47,14 @@ class InsiderTrade:
     @property
     def summary(self) -> str:
         action = "BOUGHT" if self.acquired_or_disposed == "A" else "SOLD"
+        if self.price_range:
+            price_str = f"avg ${self.price_per_share:,.2f}, range {self.price_range}"
+        else:
+            price_str = f"${self.price_per_share:,.2f}"
         return (
             f"{self.insider_name} ({self.insider_title}) {action} "
             f"${self.total_value:,.0f} of {self.ticker} ({self.company_name}) — "
-            f"{self.shares:,.0f} shares @ ${self.price_per_share:,.2f}"
+            f"{self.shares:,.0f} shares @ {price_str}"
         )
 
 

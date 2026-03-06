@@ -160,6 +160,54 @@ def _13dg_to_dict(f) -> dict:
     }
 
 
+# ── Trade Aggregation ────────────────────────────────────────
+
+def aggregate_trades(trades: list[InsiderTrade]) -> list[InsiderTrade]:
+    """Collapse same-day multi-tranche trades into one row per (insider, ticker, direction, date).
+
+    Groups by (insider_name, ticker, acquired_or_disposed, filing_date). For groups with
+    multiple rows: sums shares, computes weighted-average price, sums total_value, and
+    records the price range. Single-row groups are returned unchanged.
+    """
+    from collections import defaultdict
+    groups: dict[tuple, list[InsiderTrade]] = defaultdict(list)
+    for t in trades:
+        key = (t.insider_name, t.ticker, t.acquired_or_disposed, t.filing_date)
+        groups[key].append(t)
+
+    result = []
+    for group in groups.values():
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+
+        total_shares = sum(t.shares for t in group)
+        total_value = sum(t.total_value for t in group)
+        weighted_avg = total_value / total_shares if total_shares else 0.0
+        min_price = min(t.price_per_share for t in group)
+        max_price = max(t.price_per_share for t in group)
+
+        first = group[0]
+        result.append(InsiderTrade(
+            filing_url=first.filing_url,
+            filing_date=first.filing_date,
+            insider_name=first.insider_name,
+            insider_title=first.insider_title,
+            is_director=first.is_director,
+            is_officer=first.is_officer,
+            company_name=first.company_name,
+            ticker=first.ticker,
+            transaction_type=first.transaction_type,
+            acquired_or_disposed=first.acquired_or_disposed,
+            shares=total_shares,
+            price_per_share=weighted_avg,
+            total_value=total_value,
+            price_range=f"${min_price:,.2f}–${max_price:,.2f}",
+        ))
+
+    return result
+
+
 # ── Form 4 Processing ───────────────────────────────────────
 
 def process_form4(client: EdgarClient, config: dict, state: StateManager,
@@ -595,7 +643,7 @@ def main():
     notifier = EmailNotifier(config["email"]) if not args.dry_run else None
 
     # Process Form 4
-    trades = process_form4(client, config, state, start_date, end_date)
+    trades = aggregate_trades(process_form4(client, config, state, start_date, end_date))
 
     if trades and notifier:
         subject, html = build_form4_email(trades, config.get("form4", {}))
