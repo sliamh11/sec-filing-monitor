@@ -172,7 +172,7 @@ def aggregate_trades(trades: list[InsiderTrade]) -> list[InsiderTrade]:
     from collections import defaultdict
     groups: dict[tuple, list[InsiderTrade]] = defaultdict(list)
     for t in trades:
-        key = (t.insider_name, t.ticker, t.acquired_or_disposed, t.filing_date)
+        key = (t.insider_name, t.ticker, t.transaction_type, t.filing_date)
         groups[key].append(t)
 
     result = []

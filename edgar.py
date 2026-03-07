@@ -162,27 +162,36 @@ class EdgarClient:
     def search_form4_filings(self, start_date: str, end_date: str, limit: int = 100) -> list[dict]:
         """
         Search EDGAR for recent Form 4 filings within a date range.
+        Paginates in batches of 100 (EDGAR API max) until limit is reached.
         Returns list of filing metadata dicts.
         """
-        params = {
-            "q": "",
-            "forms": "4",
-            "dateRange": "custom",
-            "startdt": start_date,
-            "enddt": end_date,
-            "from": 0,
-            "size": min(limit, 100),
-        }
         logger.info(f"Searching Form 4 filings: {start_date} to {end_date}")
+        all_hits = []
+        page_size = 100
+        offset = 0
         try:
-            resp = self._get(self.EFTS_SEARCH_URL, params=params)
-            data = resp.json()
-            hits = data.get("hits", {}).get("hits", [])
-            logger.info(f"Found {len(hits)} Form 4 filings")
-            return hits
+            while offset < limit:
+                params = {
+                    "q": "",
+                    "forms": "4",
+                    "dateRange": "custom",
+                    "startdt": start_date,
+                    "enddt": end_date,
+                    "from": offset,
+                    "size": min(page_size, limit - offset),
+                }
+                resp = self._get(self.EFTS_SEARCH_URL, params=params)
+                data = resp.json()
+                hits = data.get("hits", {}).get("hits", [])
+                all_hits.extend(hits)
+                if len(hits) < page_size:
+                    break  # no more results
+                offset += page_size
+            logger.info(f"Found {len(all_hits)} Form 4 filings")
+            return all_hits
         except Exception as e:
             logger.error(f"Form 4 search failed: {e}")
-            return []
+            return all_hits
 
     def fetch_form4_xml(self, filing_url: str) -> Optional[str]:
         """Fetch the XML content of a specific Form 4 filing."""
